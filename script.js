@@ -22,11 +22,12 @@
 
   const GAUGE_ARC_LENGTH = 314; // approx pi * r(100)
 
+  // Holds the last payload that passed client-side validation, so
+  // "Try again" can resubmit it without re-reading/re-validating the form.
+  let lastPayload = null;
+
   // ---------------------------------------------------------
   // Maps Pydantic field names (StudentData) <-> HTML element ids
-  // Needed because the API payload uses capitalized keys
-  // (Age, Study_Hours, ...) while the form ids are lowercase
-  // (age, study_hours, ...).
   // ---------------------------------------------------------
   const FIELD_ID_MAP = {
     Age: "age",
@@ -81,6 +82,11 @@
     });
   });
 
+  function clearSegmentedControl() {
+    segGroup.querySelectorAll(".seg-btn").forEach((b) => b.classList.remove("active"));
+    stressHiddenInput.value = "";
+  }
+
   // ---------------------------------------------------------
   // Field-level error helpers
   // ---------------------------------------------------------
@@ -111,8 +117,6 @@
 
   // ---------------------------------------------------------
   // Client-side validation mirroring the StudentData model
-  // (payload keys are capitalized to match the API, so each
-  // check maps back to the payload key via FIELD_ID_MAP)
   // ---------------------------------------------------------
   function validate(payload) {
     const errors = [];
@@ -224,8 +228,8 @@
   }
 
   function renderError(label, copy) {
-    errorLabelEl.textContent = label;
-    errorCopyEl.textContent = copy;
+    if (errorLabelEl) errorLabelEl.textContent = label;
+    if (errorCopyEl) errorCopyEl.textContent = copy;
     showState("error");
   }
 
@@ -249,21 +253,11 @@
   }
 
   // ---------------------------------------------------------
-  // Submit handler
+  // Core prediction call — shared by the submit handler and
+  // the "Try again" retry button. Assumes `payload` has already
+  // passed client-side validation.
   // ---------------------------------------------------------
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    clearAllErrors();
-
-    const payload = collectPayload();
-    const clientErrors = validate(payload);
-
-    if (clientErrors.length > 0) {
-      clientErrors.forEach(([input, msg]) => input && setFieldError(input, msg));
-      clientErrors[0][0]?.focus?.();
-      return;
-    }
-
+  async function runPrediction(payload) {
     setSubmitting(true);
     showState("loading");
 
@@ -309,6 +303,26 @@
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // ---------------------------------------------------------
+  // Submit handler
+  // ---------------------------------------------------------
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearAllErrors();
+
+    const payload = collectPayload();
+    const clientErrors = validate(payload);
+
+    if (clientErrors.length > 0) {
+      clientErrors.forEach(([input, msg]) => input && setFieldError(input, msg));
+      clientErrors[0][0]?.focus?.();
+      return;
+    }
+
+    lastPayload = payload;
+    await runPrediction(payload);
   });
 
   // live-clear errors as the user edits
@@ -317,11 +331,22 @@
     el.addEventListener("change", () => clearFieldError(el));
   });
 
+  // "Run another read": clear all fields for a fresh entry, then go to idle.
   resetBtn.addEventListener("click", () => {
+    form.reset();
+    clearSegmentedControl();
+    clearAllErrors();
+    lastPayload = null;
     showState("idle");
   });
 
-  errorRetryBtn.addEventListener("click", () => {
-    showState("idle");
+  // "Try again": resubmit the same payload automatically, no form editing.
+  errorRetryBtn.addEventListener("click", async () => {
+    if (!lastPayload) {
+      // Fallback: nothing to retry with (shouldn't normally happen), send back to idle.
+      showState("idle");
+      return;
+    }
+    await runPrediction(lastPayload);
   });
 })();
